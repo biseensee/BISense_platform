@@ -1,0 +1,22 @@
+# syntax=docker/dockerfile:1
+# Background worker (arq) — scheduled report/cache refresh, async jobs.
+# Kept as a separate image from the API so worker concurrency scales
+# independently of request-serving pods.
+FROM python:3.11-slim
+
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends libpq-dev gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml ./
+COPY src ./src
+
+RUN pip install --no-cache-dir .
+
+RUN useradd --create-home --uid 1000 appuser
+USER appuser
+
+CMD ["arq", "src.worker.WorkerSettings"]

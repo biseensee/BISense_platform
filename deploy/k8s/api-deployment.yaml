@@ -1,0 +1,80 @@
+# Production API deployment skeleton. Scaling notes (10+ TB / 1000+ users):
+# - Stateless pods behind a Service/Ingress + HPA on CPU and a custom metric
+#   (http_request_duration_seconds p95) — request routing needs no sticky
+#   sessions since auth is JWT-bearer.
+# - DATABASE connections go through PgBouncer (see api-configmap), not
+#   directly to Postgres, so pod count isn't bounded by Postgres
+#   max_connections.
+# - Secrets (JWT key, DB password, datasource encryption key) come from a
+#   K8s Secret, never baked into the image or ConfigMap.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bi-platform-api
+  labels: { app: bi-platform-api }
+spec:
+  replicas: 4
+  selector:
+    matchLabels: { app: bi-platform-api }
+  template:
+    metadata:
+      labels: { app: bi-platform-api }
+    spec:
+      containers:
+        - name: api
+          image: registry.example.com/bi-platform/api:latest
+          ports: [{ containerPort: 8000 }]
+          envFrom:
+            - configMapRef: { name: bi-platform-api-config }
+            - secretRef: { name: bi-platform-api-secrets }
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8000 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8000 }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests: { cpu: "250m", memory: "256Mi" }
+            limits: { cpu: "1", memory: "512Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bi-platform-api
+spec:
+  selector: { app: bi-platform-api }
+  ports:
+    - port: 80
+      targetPort: 8000
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: bi-platform-api
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: bi-platform-api
+  minReplicas: 4
+  maxReplicas: 40
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 65 }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bi-platform-api-config
+data:
+  APP_ENV: "production"
+  DEBUG: "false"
+  POSTGRES_HOST: "pgbouncer.data.svc.cluster.local"
+  POSTGRES_PORT: "6432"
+  REDIS_URL: "redis://redis.data.svc.cluster.local:6379/0"
+  LOG_JSON: "true"
+  QUERY_CACHE_TTL_SECONDS: "300"
